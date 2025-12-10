@@ -1,11 +1,11 @@
-use actix_web::{App, HttpResponse, HttpServer, Result, get, web};
+use actix_web::{App, HttpResponse, HttpServer, Result, get, post, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, prelude::FromRow};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
-struct Transaction {
+struct Payment {
     id: Uuid,
     user_session_id: Uuid,
     name: String,
@@ -17,16 +17,16 @@ struct Transaction {
 }
 
 #[derive(Debug, Deserialize)]
-struct CreateTransactionRequest {
+struct CreatePaymentRequest {
     name: String,
     amount: f64,
     email: String,
     description: String,
 }
 
-#[get("/transactions")]
-async fn get_transactions(state: web::Data<AppState>) -> Result<HttpResponse> {
-    let transactions = sqlx::query_as::<_, Transaction>(
+#[get("/payments")]
+async fn get_payments(state: web::Data<AppState>) -> Result<HttpResponse> {
+    let transactions = sqlx::query_as::<_, Payment>(
         "SELECT * FROM transactions ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
@@ -37,6 +37,11 @@ async fn get_transactions(state: web::Data<AppState>) -> Result<HttpResponse> {
     })?;
 
     Ok(HttpResponse::Ok().json(transactions))
+}
+
+#[post("/payments")]
+async fn create_payment() -> Result<HttpResponse> {
+    todo!()
 }
 
 struct AppState {
@@ -58,7 +63,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
         .app_data(app_state.clone())
-        .service(get_transactions)
+        .service(get_payments)
+        .service(create_payment)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
