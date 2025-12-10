@@ -26,22 +26,55 @@ struct CreatePaymentRequest {
 
 #[get("/payments")]
 async fn get_payments(state: web::Data<AppState>) -> Result<HttpResponse> {
-    let transactions = sqlx::query_as::<_, Payment>(
+    let payments = sqlx::query_as::<_, Payment>(
         "SELECT * FROM transactions ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
     .await
     .map_err(|e| {
-        eprintln!("Failed to fetch transactions: {}", e);
-    actix_web::error::ErrorInternalServerError("Failed to fetch transactions")
+        eprintln!("Failed to fetch payments: {}", e);
+    actix_web::error::ErrorInternalServerError("Failed to fetch payments")
     })?;
 
-    Ok(HttpResponse::Ok().json(transactions))
+    Ok(HttpResponse::Ok().json(payments))
 }
 
 #[post("/payments")]
-async fn create_payment() -> Result<HttpResponse> {
-    todo!()
+async fn create_payment(
+    state: web::Data<AppState>,
+    body: web::Json<CreatePaymentRequest>,
+) -> Result<HttpResponse> {
+    let id = Uuid::new_v4();
+    let user_session_id = Uuid::new_v4();
+
+    let query = sqlx::query_as::<_, Payment>(
+        r#"
+        INSERT INTO transactions (
+            id,
+            user_session_id,
+            name,
+            amount,
+            email,
+            description
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+        "#
+    )
+    .bind(id)
+    .bind(user_session_id)
+    .bind(&body.name)
+    .bind(body.amount)
+    .bind(&body.email)
+    .bind(&body.description)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Failed to create payment: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to create payment")
+    })?;
+
+    Ok(HttpResponse::Created().json(query))
 }
 
 struct AppState {
