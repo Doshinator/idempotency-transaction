@@ -1,0 +1,33 @@
+- send initial request
+curl -X POST http://localhost:8080/payments \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: test-123" \
+  -d '{
+    "name": "Frank Herbert",
+    "amount": 49.99,
+    "email": "frank@example.com",
+    "description": "Dune Book Purchase"
+  }'
+
+- Replay same request w/ same key 
+- Same key with different request (409 conflict)
+
+curl -X POST http://localhost:8080/payments \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: test-123" \
+  -d '{
+    "name": "Someone Else",
+    "amount": 100.00,
+    "email": "fake@example.com",
+    "description": "Different"
+  }'
+
+- No idempotency-key header
+curl -X POST http://localhost:8080/payments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Paul",
+    "amount": 10,
+    "email": "paul@example.com",
+    "description": "Test"
+  }'
