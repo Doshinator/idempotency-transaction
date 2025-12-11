@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, prelude::FromRow};
 use uuid::Uuid;
+use md5;
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 struct Payment {
@@ -16,7 +17,7 @@ struct Payment {
     updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct CreatePaymentRequest {
     name: String,
     amount: f64,
@@ -42,12 +43,76 @@ async fn get_payments(state: web::Data<AppState>) -> Result<HttpResponse> {
 #[post("/payments")]
 async fn create_payment(
     state: web::Data<AppState>,
+    req: actix_web::HttpRequest,
     body: web::Json<CreatePaymentRequest>,
 ) -> Result<HttpResponse> {
+    // Extract idem P key
+    let idempotency_key = req
+        .headers()
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(actix_web::error::ErrorBadRequest("Missing header Idempotency-Key"))?;
+
+    // 2. Hash the request body
+    let body_json = serde_json::to_string(&body)?;
+    let request_hash = format!("{:x}", md5::compute(&body_json));
+
+    // 3. Check existing idempotency record
+    if let Some(existing) = sqlx::query!(
+        r#"
+        SELECT 
+            request_hash, 
+            response_body AS "response_body: sqlx::types::Json<serde_json::Value>"
+        FROM idempotency_keys 
+        WHERE idempotency_key = $1
+        "#,
+        idempotency_key
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Idempotency lookup failed: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed checking idempotency key")
+    })?
+    {
+        if existing.request_hash != request_hash {
+            return Err(actix_web::error::ErrorConflict("Request body does not match previous request for this key"));
+        }
+
+        if let Some(resp) = existing.response_body {
+            return Ok(HttpResponse::Ok()
+                .content_type("application/json")
+                .body(resp.to_string()));
+        }
+
+        return Err(actix_web::error::ErrorTooManyRequests("Request is still being processed"));
+    }
+
+    // 4. Store "processing" record
     let id = Uuid::new_v4();
     let user_session_id = Uuid::new_v4();
 
-    let query = sqlx::query_as::<_, Payment>(
+    // 5. Create payment
+    sqlx::query!(
+        "INSERT INTO idempotency_keys (
+            idempotency_key, 
+            user_session_id,
+            request_hash
+        )
+        VALUES ($1, $2, $3)
+        ",
+        idempotency_key,
+        user_session_id,
+        request_hash
+    )
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Failed inserting idempotency record: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed inserting idempotency key")
+    })?;
+
+    let payment = sqlx::query_as::<_, Payment>(
         r#"
         INSERT INTO transactions (
             id,
@@ -74,7 +139,25 @@ async fn create_payment(
         actix_web::error::ErrorInternalServerError("Failed to create payment")
     })?;
 
-    Ok(HttpResponse::Created().json(query))
+    // Cache the result
+    let response_json = sqlx::types::Json(serde_json::to_value(&payment)?);
+    sqlx::query!(
+        r#"
+        UPDATE idempotency_keys 
+        SET response_body = $1, updated_at = NOW() 
+        WHERE idempotency_key = $2
+        "#,
+        response_json.0,
+        idempotency_key
+    )
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error: {}", e);
+        actix_web::error::ErrorInternalServerError("DB error")
+    })?;
+
+    Ok(HttpResponse::Created().json(payment))
 }
 
 struct AppState {
@@ -83,6 +166,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // export DATABASE_URL="postgres://postgres:postgres@localhost/transactions"
     // psql -h localhost -p 5432 -U postgres -d transactions
     let database_url = "postgres://postgres:postgres@localhost/transactions";
 
